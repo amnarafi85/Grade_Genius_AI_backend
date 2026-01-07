@@ -20,7 +20,6 @@
     "openai": "^6.2.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^2.2.2",
-    "pdf-poppler": "^0.2.3",
     "sharp": "^0.34.4",
     "tesseract.js": "^6.0.1"
   },
