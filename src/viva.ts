@@ -11,11 +11,17 @@ import { ImageAnnotatorClient } from "@google-cloud/vision";
 import path from "path";
 import fs from "fs";
 import sharp, { OutputInfo } from "sharp";
-import fetch from "node-fetch";
 import Tesseract from "tesseract.js";
-// @ts-ignore
-import { convert } from "pdf-poppler";
 const pdfParse = require("pdf-parse");
+
+// ✅ Render/Linux-safe temp folder + PDF->image conversion using pdftoppm (poppler-utils)
+import os from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
+const execFileAsync = promisify(execFile);
+
+// ✅ Node 20+ has global fetch (Render friendly)
+const fetchFn: typeof fetch = (...args: any[]) => fetch(...(args as Parameters<typeof fetch>));
 
 // ✅ multer for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
@@ -38,6 +44,41 @@ const isMeaningful = (s: string) => {
   const clean = (s || "").replace(/[^a-zA-Z0-9]/g, "");
   return clean.length >= 30;
 };
+
+// ✅ safe temp path (Render-friendly)
+function tmpPath(file: string) {
+  return path.join(os.tmpdir(), file);
+}
+
+// ✅ Replacement for pdf-poppler convert() using pdftoppm (Linux/Render-safe)
+async function convertPdfToImages(
+  pdfPath: string,
+  outDir: string,
+  prefix: string,
+  format: "jpeg" | "png",
+  dpi: number
+) {
+  // pdftoppm outputs: {prefix}-1.jpg/png, {prefix}-2.jpg/png ...
+  const outPrefixPath = path.join(outDir, prefix);
+
+  if (format === "jpeg") {
+    await execFileAsync("pdftoppm", ["-jpeg", "-r", String(dpi), pdfPath, outPrefixPath]);
+  } else {
+    await execFileAsync("pdftoppm", ["-png", "-r", String(dpi), pdfPath, outPrefixPath]);
+  }
+
+  const ext = format === "jpeg" ? ".jpg" : ".png";
+  const files = fs
+    .readdirSync(outDir)
+    .filter((f) => f.startsWith(prefix + "-") && f.toLowerCase().endsWith(ext))
+    .sort((a, b) => {
+      const na = Number((a.match(/-(\d+)\.(png|jpg)$/i) || [])[1] || 0);
+      const nb = Number((b.match(/-(\d+)\.(png|jpg)$/i) || [])[1] || 0);
+      return na - nb;
+    });
+
+  return files.map((f) => path.join(outDir, f));
+}
 
 // Cap base64 data-uri (~19MB)
 async function toDataURIWithCap(imgPath: string, maxBytes = 19 * 1024 * 1024): Promise<string> {
@@ -67,27 +108,16 @@ async function ocrWithVisionImagesMultiVariant(
 ) {
   console.log("🖼️ Vision OCR Images++ (DPI 350)");
 
-  const outputBase = path.join(__dirname, `page_${baseKey}`);
-  const opts: any = {
-    format: "jpeg",
-    out_dir: path.dirname(outputBase),
-    out_prefix: `page_${baseKey}`,
-    page: null,
-    dpi: 350,
-  };
+  const dir = os.tmpdir();
+  const prefix = `page_${baseKey}`;
 
-  await convert(pdfPath, opts);
-
-  const dir = path.dirname(outputBase);
-  const imageFiles = fs
-    .readdirSync(dir)
-    .filter((f) => f.startsWith(`page_${baseKey}`) && f.endsWith(".jpg"))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  // ✅ convert PDF -> JPEG images
+  const imagePaths = await convertPdfToImages(pdfPath, dir, prefix, "jpeg", 350);
 
   let mergedDoc = "";
 
-  for (const img of imageFiles) {
-    const imgPath = path.join(dir, img);
+  for (const imgPath of imagePaths) {
+    const img = path.basename(imgPath);
     console.log("📸 OCR image:", img);
 
     const variants: Array<{ path: string }> = [];
@@ -177,25 +207,15 @@ async function ocrWithVisionPdfNative(visionClient: ImageAnnotatorClient, pdfPat
 async function ocrWithTesseract(pdfPath: string, baseKey: string) {
   console.log("🔡 Tesseract fallback");
 
-  const outputBase = path.join(__dirname, `tess_${baseKey}`);
-  await convert(pdfPath, {
-    format: "jpeg",
-    out_dir: path.dirname(outputBase),
-    out_prefix: `tess_${baseKey}`,
-    page: null,
-    dpi: 300,
-  });
+  const dir = os.tmpdir();
+  const prefix = `tess_${baseKey}`;
 
-  const dir = path.dirname(outputBase);
-  const imageFiles = fs
-    .readdirSync(dir)
-    .filter((f) => f.startsWith(`tess_${baseKey}`) && f.endsWith(".jpg"))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  // ✅ convert PDF -> JPEG images
+  const imagePaths = await convertPdfToImages(pdfPath, dir, prefix, "jpeg", 300);
 
   let merged = "";
 
-  for (const img of imageFiles) {
-    const imgPath = path.join(dir, img);
+  for (const imgPath of imagePaths) {
     try {
       const { data } = await Tesseract.recognize(imgPath, "eng", {
         tessedit_pageseg_mode: 6,
@@ -219,26 +239,15 @@ async function ocrWithTesseract(pdfPath: string, baseKey: string) {
 async function ocrWithOpenAIOCR(pdfPath: string) {
   console.log("🧠 OpenAI OCR");
 
-  const outputBase = path.join(__dirname, `openai_${Date.now()}`);
-  await convert(pdfPath, {
-    format: "png",
-    out_dir: path.dirname(outputBase),
-    out_prefix: path.basename(outputBase),
-    page: null,
-    dpi: 420,
-  });
+  const dir = os.tmpdir();
+  const prefix = `openai_${Date.now()}`;
 
-  const dir = path.dirname(outputBase);
-
-  const rawImages = fs
-    .readdirSync(dir)
-    .filter((f) => f.startsWith(path.basename(outputBase)) && f.endsWith(".png"))
-    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  // ✅ convert PDF -> PNG images
+  const imagePaths = await convertPdfToImages(pdfPath, dir, prefix, "png", 420);
 
   let allText = "";
 
-  for (const img of rawImages) {
-    const raw = path.join(dir, img);
+  for (const raw of imagePaths) {
     const preOut = raw.replace(".png", "_pre.png");
 
     await sharp(raw)
@@ -253,7 +262,7 @@ async function ocrWithOpenAIOCR(pdfPath: string) {
     const dataURI = await toDataURIWithCap(preOut);
     let pageText = "";
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    const response = await fetchFn("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -479,7 +488,7 @@ export function setupVivaRoutes(app: Express, supabase: SupabaseClient, visionCl
         throw new Error("Failed to download PDF");
       }
 
-      const tempPdfPath = path.join(__dirname, `temp_viva_${configId}.pdf`);
+      const tempPdfPath = tmpPath(`temp_viva_${configId}.pdf`);
       fs.writeFileSync(tempPdfPath, Buffer.from(await (file as any).arrayBuffer()));
 
       let extractedText = "";
@@ -554,7 +563,7 @@ Return JSON like:
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 60000);
 
-      const openaiResp = await fetch("https://api.openai.com/v1/responses", {
+      const openaiResp = await fetchFn("https://api.openai.com/v1/responses", {
         method: "POST",
         signal: controller.signal,
         headers: {
@@ -774,7 +783,7 @@ Return JSON like:
         payload.customer = { number: phoneNumber.trim() };
       }
 
-      const response = await fetch("https://api.vapi.ai/call", {
+      const response = await fetchFn("https://api.vapi.ai/call", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${VAPI_PRIVATE_KEY}`,
@@ -828,7 +837,7 @@ Return JSON like:
         metadata: { session_id: sessionId },
       };
 
-      const response = await fetch("https://api.vapi.ai/call", {
+      const response = await fetchFn("https://api.vapi.ai/call", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${VAPI_PRIVATE_KEY}`,
