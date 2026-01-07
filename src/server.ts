@@ -112,6 +112,7 @@ const visionClient = new ImageAnnotatorClient({
 // ============================================================
 const allowedOrigins = [
   "http://localhost:5173",
+   "https://grade-genius-ai.onrender.com",
   // ✅ Add your Render frontend URL here when you deploy, example:
   // "https://your-frontend.onrender.com",
 ];
