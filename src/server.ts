@@ -4,8 +4,8 @@ import path from "path";
 // ✅ FIX: safe temp folder support
 import os from "os";
 
-// Load .env FIRST, before anything else
-dotenv.config({ path: path.resolve(__dirname, "../.env") });
+// ✅ Render-friendly: Load .env if present (local dev). On Render, env vars come from dashboard.
+dotenv.config();
 
 console.log("🧪 OPENAI_API_KEY Loaded:", process.env.OPENAI_API_KEY ? "✅ Yes" : "❌ No");
 console.log("🧪 GOOGLE_API_KEY Loaded:", process.env.GOOGLE_API_KEY ? "✅ Yes" : "❌ No");
@@ -25,13 +25,18 @@ const pdfParse = require("pdf-parse"); // ✅ compatible import
 import { convert } from "pdf-poppler";
 import sharp, { OutputInfo } from "sharp";
 import { setupGraderRoutes } from "./grader";
-import fetch from "node-fetch";
+
+// ✅ Render-friendly: Node 20+ has global fetch (no node-fetch needed)
+const fetchFn: typeof fetch = (...args: any[]) => fetch(...(args as Parameters<typeof fetch>));
 
 // Optional fallback OCR
 import Tesseract from "tesseract.js";
 
 const app = express();
-const port = 5000;
+
+// ✅ Render-friendly: use Render's PORT when available
+const port = Number(process.env.PORT) || 5000;
+
 import { setupGreenGradedRoutes } from "./green_graded";
 import { setupSBABRoute } from "./SBAW";
 import { setupVivaRoutes } from "./viva";
@@ -60,6 +65,8 @@ const visionClient = new ImageAnnotatorClient({
 // ============================================================
 const allowedOrigins = [
   "http://localhost:5173",
+  // ✅ Add your Render frontend URL here when you deploy, example:
+  // "https://your-frontend.onrender.com",
 ];
 
 function isAllowedOrigin(origin?: string) {
@@ -552,7 +559,7 @@ async function ocrWithOpenAIOCR(pdfPath: string) {
 
       for (const model of modelCandidates) {
         console.log(`🧾 Sending ${img} to OpenAI OCR API with model=${model}...`);
-        const response = await fetch("https://api.openai.com/v1/responses", {
+        const response = await fetchFn("https://api.openai.com/v1/responses", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -706,7 +713,7 @@ async function ocrWithGeminiOCR(pdfPath: string) {
         const url = `${relayBase.replace(/\/+$/, "")}${relayPath}`;
         console.log(`🧾 Sending ${path.basename(imgPath)} to Gemini OCR relay → ${url}`);
         try {
-          const resp = await fetch(url, {
+          const resp = await fetchFn(url, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -771,7 +778,7 @@ async function ocrWithGeminiOCR(pdfPath: string) {
               ],
             };
 
-            const resp = await fetch(endpoint, {
+            const resp = await fetchFn(endpoint, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(body),
@@ -1009,6 +1016,8 @@ setupVivaRoutes(app, supabase, visionClient);
 // ============================================================
 // 🚀 START SERVER
 // ============================================================
-app.listen(port, () => {
-  console.log(`✅ Server running at http://localhost:${port}`);
+
+// ✅ Render-friendly: bind to 0.0.0.0 and use PORT
+app.listen(port, "0.0.0.0", () => {
+  console.log(`✅ Server running on port ${port}`);
 });
